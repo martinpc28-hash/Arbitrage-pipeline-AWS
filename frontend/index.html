@@ -55,6 +55,7 @@
   <div class="tabs">
     <button class="tab-btn active" id="tab-btn-buscar">Buscar arbitraje</button>
     <button class="tab-btn" id="tab-btn-calc">Calculadora de arbitraje</button>
+    <button class="tab-btn" id="tab-btn-historial">Historial</button>
   </div>
 
   <div id="tab-buscar">
@@ -107,6 +108,18 @@
     </div>
     <div id="calc-result"></div>
   </div>
+
+  <div id="tab-historial" style="display:none;">
+    <div class="card" id="history-list-card">
+      <div class="status" id="history-status">Cargando historial...</div>
+      <div id="history-list"></div>
+    </div>
+    <div id="history-detail" style="display:none;">
+      <button class="secondary" id="btn-history-back">&larr; Volver al listado</button>
+      <div id="history-results" style="margin-top:16px;"></div>
+      <div id="history-scanned"></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -126,21 +139,30 @@ let currentJobId = null;
 
 const tabBtnBuscar = document.getElementById("tab-btn-buscar");
 const tabBtnCalc = document.getElementById("tab-btn-calc");
+const tabBtnHistorial = document.getElementById("tab-btn-historial");
 const tabBuscar = document.getElementById("tab-buscar");
 const tabCalc = document.getElementById("tab-calc");
+const tabHistorial = document.getElementById("tab-historial");
 
-tabBtnBuscar.addEventListener("click", () => {
-  tabBtnBuscar.classList.add("active");
-  tabBtnCalc.classList.remove("active");
-  tabBuscar.style.display = "block";
-  tabCalc.style.display = "none";
-});
+const tabs = [
+  { btn: tabBtnBuscar, panel: tabBuscar },
+  { btn: tabBtnCalc, panel: tabCalc },
+  { btn: tabBtnHistorial, panel: tabHistorial },
+];
 
-tabBtnCalc.addEventListener("click", () => {
-  tabBtnCalc.classList.add("active");
-  tabBtnBuscar.classList.remove("active");
-  tabCalc.style.display = "block";
-  tabBuscar.style.display = "none";
+function switchTab(activeBtn) {
+  for (const t of tabs) {
+    const isActive = t.btn === activeBtn;
+    t.btn.classList.toggle("active", isActive);
+    t.panel.style.display = isActive ? "block" : "none";
+  }
+}
+
+tabBtnBuscar.addEventListener("click", () => switchTab(tabBtnBuscar));
+tabBtnCalc.addEventListener("click", () => switchTab(tabBtnCalc));
+tabBtnHistorial.addEventListener("click", () => {
+  switchTab(tabBtnHistorial);
+  if (!historyLoaded) loadHistory();
 });
 
 // Misma formula que el backend (ver src/common/arbitrage.py::_evaluar):
@@ -295,6 +317,76 @@ async function pollStatus() {
   }
 }
 
+// --- Historial ---
+const historyListCard = document.getElementById("history-list-card");
+const historyDetail = document.getElementById("history-detail");
+const historyList = document.getElementById("history-list");
+const historyStatus = document.getElementById("history-status");
+const historyResultsEl = document.getElementById("history-results");
+const historyScannedEl = document.getElementById("history-scanned");
+const SPORT_NAMES = { "10": "Futbol", "18": "Baloncesto", "13": "Baseball", "12": "Cricket", "16": "Hockey sobre hielo" };
+
+let historyLoaded = false;
+
+async function loadHistory() {
+  historyStatus.textContent = "Cargando historial...";
+  historyList.innerHTML = "";
+  try {
+    const res = await fetch(API_BASE + "/history");
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Error cargando historial");
+    historyLoaded = true;
+    renderHistoryList(data.jobs || []);
+  } catch (err) {
+    historyStatus.textContent = "Error cargando historial: " + err.message;
+  }
+}
+
+function renderHistoryList(jobs) {
+  historyList.innerHTML = "";
+  if (jobs.length === 0) {
+    historyStatus.textContent = "Todavia no hay busquedas guardadas.";
+    return;
+  }
+  historyStatus.textContent = jobs.length + " busqueda(s) anteriores (la mas reciente primero)";
+
+  for (const job of jobs) {
+    const el = document.createElement("div");
+    el.className = "opp";
+    el.style.cursor = "pointer";
+    const fecha = job.createdAt ? new Date(job.createdAt).toLocaleString() : "fecha desconocida";
+    const deporte = job.sportIdFilter ? (SPORT_NAMES[String(job.sportIdFilter)] || ("deporte " + job.sportIdFilter)) : "todos los deportes";
+    const conArb = Number(job.fixturesWithArbitrage) || 0;
+    el.innerHTML =
+      '<div class="opp-header"><span>' + fecha + '</span><span class="muted" style="font-size:12px;">' + deporte + '</span></div>' +
+      '<div class="row"><span class="muted">Partidos analizados</span><span>' + (job.fixturesProcessed || 0) + '</span></div>' +
+      '<div class="row"><span class="muted">Partidos con arbitraje</span><span class="' + (conArb > 0 ? "profit" : "muted") + '">' + conArb + '</span></div>';
+    el.addEventListener("click", () => openHistoryJob(job.jobId));
+    historyList.appendChild(el);
+  }
+}
+
+async function openHistoryJob(jobId) {
+  historyListCard.style.display = "none";
+  historyDetail.style.display = "block";
+  historyResultsEl.innerHTML = '<div class="status">Cargando...</div>';
+  historyScannedEl.innerHTML = "";
+  try {
+    const res = await fetch(API_BASE + "/jobs/" + jobId);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Error cargando la busqueda");
+    renderResults(data, historyResultsEl);
+    renderScanned(data, historyScannedEl);
+  } catch (err) {
+    historyResultsEl.innerHTML = '<div class="error">Error: ' + err.message + '</div>';
+  }
+}
+
+document.getElementById("btn-history-back").addEventListener("click", () => {
+  historyDetail.style.display = "none";
+  historyListCard.style.display = "block";
+});
+
 function legsHtml(legs) {
   return legs.map(function(leg) {
     var nameHtml = leg.outcomeLabel || ("resultado " + leg.outcomeId);
@@ -305,27 +397,28 @@ function legsHtml(legs) {
   }).join("");
 }
 
-function renderResults(data) {
-  resultsEl.innerHTML = "";
+function renderResults(data, targetEl) {
+  targetEl = targetEl || resultsEl;
+  targetEl.innerHTML = "";
 
   const summary = document.createElement("div");
   summary.className = "status";
   summary.style.marginBottom = "12px";
   summary.textContent = data.fixturesProcessed + " partidos analizados - " + data.fixturesWithArbitrage + " con arbitraje - " + data.fixturesFromCache + " desde cache";
-  resultsEl.appendChild(summary);
+  targetEl.appendChild(summary);
 
   const opportunities = data.opportunities || [];
 
   const caveat = document.createElement("div");
   caveat.className = "caveat";
   caveat.textContent = "Los porcentajes de ganancia muy altos (mas de ~20-30%) suelen venir de mercados con mas de 2 resultados reales donde solo se detectaron cuotas de 2 casas. Verifica manualmente el mercado completo antes de apostar en esos casos.";
-  if (opportunities.length > 0) resultsEl.appendChild(caveat);
+  if (opportunities.length > 0) targetEl.appendChild(caveat);
 
   if (opportunities.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty";
     empty.textContent = "No se encontraron oportunidades de arbitraje en esta busqueda.";
-    resultsEl.appendChild(empty);
+    targetEl.appendChild(empty);
     return;
   }
 
@@ -337,23 +430,24 @@ function renderResults(data) {
       '<div class="opp-header"><span>' + op.label + '</span><span class="' + (suspicious ? "profit-suspicious" : "profit") + '">+' + op.profitPct + '%' + (suspicious ? " (verificar)" : "") + '</span></div>' +
       '<div class="opp-sub">Mercado ' + (op.marketLabel || op.marketKey) + ' - implicacion ' + op.impliedProbabilitySum + '</div>' +
       legsHtml(op.legs);
-    resultsEl.appendChild(el);
+    targetEl.appendChild(el);
   }
 }
 
-function renderScanned(data) {
-  scannedEl.innerHTML = "";
+function renderScanned(data, targetEl) {
+  targetEl = targetEl || scannedEl;
+  targetEl.innerHTML = "";
 
   const heading = document.createElement("h2");
   heading.textContent = "Todos los partidos escaneados (" + (data.scannedFixtures || []).length + ")";
-  scannedEl.appendChild(heading);
+  targetEl.appendChild(heading);
 
   const list = data.scannedFixtures || [];
   if (list.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty";
     empty.textContent = "No hay partidos escaneados para mostrar.";
-    scannedEl.appendChild(empty);
+    targetEl.appendChild(empty);
     return;
   }
 
@@ -378,7 +472,7 @@ function renderScanned(data) {
       '<div class="opp-header"><span>' + fx.label + '</span><span class="muted" style="font-size:12px;">' + (fx.marketsAnalyzed || 0) + ' mercados</span></div>' +
       '<div class="opp-sub">' + (fx.tournamentName || fx.sportName || "") + '</div>' +
       mathHtml;
-    scannedEl.appendChild(el);
+    targetEl.appendChild(el);
   }
 }
 </script>
