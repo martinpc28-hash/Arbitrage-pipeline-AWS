@@ -151,7 +151,14 @@ def _catalog_chunk_key(i):
     return CATALOG_CACHE_KEY + ":chunk:" + str(i)
 
 
-def _enriquecer_nombres(evaluados, market_names, outcome_names):
+def _enriquecer_nombres(evaluados, market_names, outcome_names, participant1_name, participant2_name):
+    # El catalogo de OddsPapi usa la convencion "1X2" para mercados de 2/3 resultados
+    # (ganador, handicap, etc.): el outcomeName es literalmente "1", "2" o "X", no el
+    # nombre del equipo. CONFIRMADO CONTRA DATOS REALES: el outcomeId mas bajo del par
+    # siempre corresponde a "1" (= participant1Name) y el mas alto a "2" (=
+    # participant2Name). Se traduce aqui para que el frontend muestre el equipo real
+    # en vez de un "1"/"2" ambiguo.
+    equipo_por_posicion = {"1": participant1_name, "2": participant2_name, "X": "Empate"}
     for e in evaluados:
         base_market_id = e["marketKey"].split("::")[0]
         if not e.get("marketLabel"):
@@ -160,6 +167,9 @@ def _enriquecer_nombres(evaluados, market_names, outcome_names):
             if not leg.get("outcomeLabel"):
                 base_outcome_id = str(leg["outcomeId"]).split(":")[0]
                 leg["outcomeLabel"] = outcome_names.get(base_outcome_id, "Resultado " + str(leg["outcomeId"]))
+            equipo = equipo_por_posicion.get(leg["outcomeLabel"])
+            if equipo:
+                leg["outcomeLabel"] = equipo
     return evaluados
 
 
@@ -184,7 +194,10 @@ def handler(event, context):
 
     if evaluados:
         market_names, outcome_names = _catalogo_nombres()
-        evaluados = _enriquecer_nombres(evaluados, market_names, outcome_names)
+        evaluados = _enriquecer_nombres(
+            evaluados, market_names, outcome_names,
+            odds_response.get("participant1Name"), odds_response.get("participant2Name"),
+        )
 
     arbitrajes = [e for e in evaluados if e["isArbitrage"] and e["profitPct"] <= PROFIT_PCT_MAX]
     mejor_mercado = min(evaluados, key=lambda e: e["impliedProbabilitySum"]) if evaluados else None
