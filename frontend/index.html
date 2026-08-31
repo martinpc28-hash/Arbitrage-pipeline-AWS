@@ -37,13 +37,27 @@
   .quota-bad { color: var(--danger); font-weight: 600; }
   .no-math { color: var(--muted); font-size: 13px; font-style: italic; }
   details summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+  .tabs { display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
+  .tab-btn { flex: 1; background: none; border: none; color: var(--muted); font-size: 14px; font-weight: 600; padding: 10px 12px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; width: auto; }
+  .tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+  input[type="number"] { font-size: 14px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: #111827; color: var(--text); width: 100%; margin-bottom: 16px; }
+  .calc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .calc-result-arb { background: rgba(34,197,94,0.1); border: 1px solid var(--accent); border-radius: 10px; padding: 16px; margin-top: 4px; }
+  .calc-result-noarb { background: rgba(239,68,68,0.1); border: 1px solid var(--danger); border-radius: 10px; padding: 16px; margin-top: 4px; }
+  .calc-result-title { font-weight: 700; font-size: 15px; margin-bottom: 10px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Buscador de arbitraje deportivo</h1>
-  <div class="sub">Escanea todos los partidos de hoy y manana en OddsPapi buscando surebets.</div>
+  <div class="sub">Escanea todos los partidos de hoy y manana en OddsPapi buscando surebets, o calcula un arbitraje manual.</div>
 
+  <div class="tabs">
+    <button class="tab-btn active" id="tab-btn-buscar">Buscar arbitraje</button>
+    <button class="tab-btn" id="tab-btn-calc">Calculadora de arbitraje</button>
+  </div>
+
+  <div id="tab-buscar">
   <div class="card" id="setup-card">
     <label for="sport">Deporte (opcional, deja "Todos" para la busqueda mas amplia)</label>
     <select id="sport">
@@ -73,6 +87,26 @@
 
   <div id="results"></div>
   <div id="scanned"></div>
+  </div>
+
+  <div id="tab-calc" style="display:none;">
+    <div class="card">
+      <div class="calc-grid">
+        <div>
+          <label for="calc-odd1">Cuota casa 1</label>
+          <input type="number" id="calc-odd1" step="0.001" min="1.001" placeholder="ej. 1.76">
+        </div>
+        <div>
+          <label for="calc-odd2">Cuota casa 2</label>
+          <input type="number" id="calc-odd2" step="0.001" min="1.001" placeholder="ej. 2.34">
+        </div>
+      </div>
+      <label for="calc-budget">Presupuesto total a repartir entre las dos apuestas</label>
+      <input type="number" id="calc-budget" step="1" min="1" value="1000">
+      <button id="btn-calc">Calcular</button>
+    </div>
+    <div id="calc-result"></div>
+  </div>
 </div>
 
 <script>
@@ -89,6 +123,75 @@ const btnConfirm = document.getElementById("btn-confirm");
 const quotaWarning = document.getElementById("quota-warning");
 
 let currentJobId = null;
+
+const tabBtnBuscar = document.getElementById("tab-btn-buscar");
+const tabBtnCalc = document.getElementById("tab-btn-calc");
+const tabBuscar = document.getElementById("tab-buscar");
+const tabCalc = document.getElementById("tab-calc");
+
+tabBtnBuscar.addEventListener("click", () => {
+  tabBtnBuscar.classList.add("active");
+  tabBtnCalc.classList.remove("active");
+  tabBuscar.style.display = "block";
+  tabCalc.style.display = "none";
+});
+
+tabBtnCalc.addEventListener("click", () => {
+  tabBtnCalc.classList.add("active");
+  tabBtnBuscar.classList.remove("active");
+  tabCalc.style.display = "block";
+  tabBuscar.style.display = "none";
+});
+
+// Misma formula que el backend (ver src/common/arbitrage.py::_evaluar):
+// implicacion_total = 1/cuota1 + 1/cuota2. Si es menor a 1, hay arbitraje:
+// apuesta_i = (1/cuota_i) / implicacion_total * presupuesto (misma ganancia sin importar quien gane).
+function calcularArbitraje(odd1, odd2, presupuesto) {
+  const imp1 = 1 / odd1;
+  const imp2 = 1 / odd2;
+  const implicacionTotal = imp1 + imp2;
+  const stake1 = (imp1 / implicacionTotal) * presupuesto;
+  const stake2 = (imp2 / implicacionTotal) * presupuesto;
+  const payout = presupuesto / implicacionTotal; // igual gane cualquiera de los dos lados
+  const ganancia = payout - presupuesto;
+  const gananciaPct = (ganancia / presupuesto) * 100;
+  return { implicacionTotal, stake1, stake2, payout, ganancia, gananciaPct, hayArbitraje: implicacionTotal < 1 };
+}
+
+document.getElementById("btn-calc").addEventListener("click", () => {
+  const resultEl = document.getElementById("calc-result");
+  const odd1 = parseFloat(document.getElementById("calc-odd1").value);
+  const odd2 = parseFloat(document.getElementById("calc-odd2").value);
+  const presupuesto = parseFloat(document.getElementById("calc-budget").value);
+
+  if (!(odd1 > 1) || !(odd2 > 1) || !(presupuesto > 0)) {
+    resultEl.innerHTML = '<div class="error">Ingresa dos cuotas mayores a 1.00 y un presupuesto mayor a 0.</div>';
+    return;
+  }
+
+  const r = calcularArbitraje(odd1, odd2, presupuesto);
+
+  if (r.hayArbitraje) {
+    resultEl.innerHTML =
+      '<div class="calc-result-arb">' +
+      '<div class="calc-result-title profit">Si hay arbitraje: ganancia garantizada de +' + r.gananciaPct.toFixed(3) + '%</div>' +
+      '<div class="row"><span class="muted">Apostar en casa 1 (cuota ' + odd1 + ')</span><span>$' + r.stake1.toFixed(2) + '</span></div>' +
+      '<div class="row"><span class="muted">Apostar en casa 2 (cuota ' + odd2 + ')</span><span>$' + r.stake2.toFixed(2) + '</span></div>' +
+      '<div class="row"><span class="muted">Retorno total (gane cualquiera de los dos)</span><span>$' + r.payout.toFixed(2) + '</span></div>' +
+      '<div class="row"><span class="muted">Ganancia neta</span><span class="profit">$' + r.ganancia.toFixed(2) + '</span></div>' +
+      '<div class="row"><span class="muted">Suma de probabilidades implicitas</span><span>' + r.implicacionTotal.toFixed(5) + '</span></div>' +
+      '</div>' +
+      '<div class="caveat" style="margin-top:14px;">Estas cuotas pueden haber cambiado desde que las viste. Verifica ambas en vivo, directamente en cada casa, antes de apostar.</div>';
+  } else {
+    resultEl.innerHTML =
+      '<div class="calc-result-noarb">' +
+      '<div class="calc-result-title" style="color:var(--danger);">No hay arbitraje con estas cuotas</div>' +
+      '<div class="row"><span class="muted">Suma de probabilidades implicitas</span><span>' + r.implicacionTotal.toFixed(5) + '</span></div>' +
+      '<div class="row"><span class="muted">Resultado de apostar ' + presupuesto + ' repartido igual</span><span>perderias ' + Math.abs(r.gananciaPct).toFixed(3) + '%</span></div>' +
+      '<div class="row muted" style="font-size:12px;">La suma debe ser menor a 1 para que haya arbitraje (mientras mas baja, mayor la ganancia).</div>' +
+      '</div>';
+  }
+});
 
 document.getElementById("btn-estimate").addEventListener("click", async () => {
   const sportId = document.getElementById("sport").value;

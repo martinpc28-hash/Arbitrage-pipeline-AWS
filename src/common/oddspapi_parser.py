@@ -10,6 +10,10 @@ diferente, asi que agrupar por market_id ya es seguro y no mezcla lineas.
 from typing import Optional
 from common.arbitrage import OutcomePrice
 
+# Casas excluidas a pedido del usuario (ej. no tiene cuenta ahi / no confia en ella).
+# Se ignoran por completo, en todos los mercados.
+BOOKMAKERS_EXCLUIDOS = {"betfair-ex"}
+
 
 def _line_de_mercado(market_obj):
     return market_obj.get("line")
@@ -23,6 +27,8 @@ def agrupar_mejores_cuotas_por_mercado(odds_response):
     mejor = {}
     etiquetas = {}
     for bm_name, bm_data in odds_response.get("bookmakerOdds", {}).items():
+        if bm_name in BOOKMAKERS_EXCLUIDOS:
+            continue
         if not bm_data.get("bookmakerIsActive", True):
             continue
         # Link al evento en esta casa (se usa como fallback si no hay betslip especifico)
