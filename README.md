@@ -114,7 +114,31 @@ GET /jobs/{jobId}            → Lambda: frontend hace polling hasta status=DONE
    cae a `fixturePath`. **Ojo:** en pruebas reales el `fixturePath` a veces
    apunta a la categoría de deporte equivocada dentro de la casa (ej. un
    partido de béisbol enlazando a la sección de hockey) — es una
-   limitación de los datos de la API, no del código.
+   limitación de los datos de la API, no del código. Además, algunas casas
+   (`polymarket.us`, `duel`, `circasports`, entre otras) simplemente no
+   traen ni `betslip` ni `fixturePath` en la respuesta de OddsPapi — el
+   frontend lo maneja bien (muestra el nombre de la casa sin link), pero
+   no hay forma de "arreglarlo" desde el código: es un hueco de los datos.
+10. **`GET /markets` NO filtra por deporte (bug corregido el 2026-08-31).**
+    El código original llamaba `GET /markets?sportId=X` asumiendo que
+    devolvía solo los mercados de ese deporte. **Confirmado contra la
+    documentación oficial** (oddspapi.io/us/docs/get-markets): el único
+    parámetro que acepta ese endpoint es `language`; `sportId` se ignora en
+    silencio y siempre devuelve el catálogo COMPLETO (todos los deportes).
+    Ese catálogo completo pesa varios cientos de KB — muy por encima del
+    límite de 400KB por ítem de DynamoDB — así que el caché de 24h
+    (guardado como un solo ítem) fallaba en CADA invocación
+    (`ValidationException: Item size has exceeded the maximum allowed
+    size`, visible en CloudWatch), y por eso `marketLabel`/`outcomeLabel`
+    salían `null` el 100% de las veces (el frontend caía de vuelta a
+    mostrar `marketKey`/`outcomeId` crudos). Arreglado en
+    `oddspapi_client.get_markets()` (ya no envía `sportId`) y en
+    `fetch_odds_detect_arb/app.py::_catalogo_nombres()` (ahora el catálogo
+    se cachea partido en varios ítems de DynamoDB, ver `_catalog_chunk_key`).
+    Verificado en producción: `GET /markets` en sí **no consume cuota**
+    mensual (solo `GET /odds` la consume), así que este bug no gastaba
+    cuota, pero sí hacía cada invocación más lenta (recargaba el catálogo
+    entero en cada fixture) y dejaba los mercados sin nombre legible.
 
 ## Antes de seguir trabajando en esto
 
@@ -161,3 +185,12 @@ src/lambdas/
    menos un mercado).
 4. Si se compra el plan de pago de OddsPapi, subir `MaxConcurrency` en el
    Step Function y relajar o quitar el paso de confirmación de gasto.
+5. **Pendiente:** el caché de 10 min de `GET /odds` por fixture
+   (`_cached_odds` en `fetch_odds_detect_arb/app.py`) también puede fallar
+   por el límite de 400KB por ítem en fixtures con muchas casas/mercados
+   (visto en producción: "Invalid string attribute value: The string
+   exceeds the maximum permitted length"). No rompe la búsqueda (está en
+   un `try/except`), pero para esos fixtures grandes el caché de 10 min no
+   sirve y una búsqueda repetida vuelve a gastar cuota. Si se quiere
+   arreglar, aplicar el mismo patrón de chunking que se usó para el
+   catálogo (punto 10 de "Descubrimientos importantes").

@@ -5,8 +5,9 @@ Invocada por el estado Map de Step Functions, una vez por cada fixtureId.
 2. Agrupa cuotas por mercado, se queda SOLO con mercados de exactamente 2
    resultados (evita falsos positivos de mercados con 3+ resultados donde
    solo se detectaron cuotas de 2 casas para 2 de esos resultados).
-3. Enriquece los nombres de mercado/resultado con el catalogo de OddsPapi
-   (GET /markets), cacheado 24h por deporte.
+3. Enriquece los nombres de mercado/resultado con el catalogo GLOBAL de OddsPapi
+   (GET /markets no filtra por deporte), cacheado 24h en varios items de DynamoDB
+   (el catalogo completo supera los 400KB por item).
 4. Descarta como "arbitraje" cualquier oportunidad con mas de 30% de
    ganancia: en la practica casi nunca ocurre, y cuando aparece suele venir
    de cuotas de prueba/erroneas de alguna casa (visto en produccion con
@@ -76,20 +77,45 @@ def _cached_odds(fixture_id):
     return odds_response, False
 
 
-def _catalogo_nombres(sport_id):
-    cache_key = "catalog:" + str(sport_id)
+CATALOG_CACHE_KEY = "catalog:all"
+CATALOG_CHUNK_MAX_CHARS = 300000  # margen bajo el limite de 400KB por item de DynamoDB
+
+
+def _catalogo_nombres():
+    """Catalogo GLOBAL de mercados de OddsPapi (marketId -> marketName, outcomeId ->
+    outcomeName). GET /markets no filtra por deporte (ver oddspapi_client.get_markets),
+    asi que siempre trae el catalogo entero de todos los deportes, y por eso hay un
+    solo cache global (no uno por deporte).
+
+    El catalogo completo supera los 400KB (limite por item de DynamoDB), asi que se
+    guarda partido en varios items ("chunks") mas un item "meta" con la cuenta de
+    chunks. Antes esto se guardaba en un solo item y el put_item fallaba siempre
+    (ValidationException: Item size has exceeded the maximum allowed size), lo que
+    hacia que el catalogo se re-descargara de OddsPapi en CADA fixture sin nunca
+    quedar cacheado.
+    """
     try:
-        cached = cache_table.get_item(Key={"fixtureId": cache_key}).get("Item")
+        meta = cache_table.get_item(Key={"fixtureId": CATALOG_CACHE_KEY + ":meta"}).get("Item")
     except Exception:
-        cached = None
+        meta = None
 
-    if cached and (time.time() - float(cached["fetchedAt"])) < CATALOG_TTL_SECONDS:
-        data = json.loads(cached["oddsData"])
-        return data["marketNames"], data["outcomeNames"]
+    if meta and (time.time() - float(meta["fetchedAt"])) < CATALOG_TTL_SECONDS:
+        try:
+            chunks = []
+            for i in range(int(meta["chunkCount"])):
+                item = cache_table.get_item(Key={"fixtureId": _catalog_chunk_key(i)}).get("Item")
+                if not item:
+                    raise ValueError("falta el chunk " + str(i))
+                chunks.append(item["data"])
+            data = json.loads("".join(chunks))
+            return data["marketNames"], data["outcomeNames"]
+        except Exception as read_err:
+            print("Cache de catalogo incompleto, se vuelve a descargar: " + str(read_err))
 
     try:
-        markets = get_markets(sport_id)
-    except OddsPapiError:
+        markets = get_markets()
+    except OddsPapiError as e:
+        print("No se pudo obtener el catalogo de OddsPapi: " + str(e))
         return {}, {}
 
     market_names = {}
@@ -102,15 +128,27 @@ def _catalogo_nombres(sport_id):
                 outcome_names[str(o["outcomeId"])] = o["outcomeName"]
 
     try:
+        payload = json.dumps({"marketNames": market_names, "outcomeNames": outcome_names}, ensure_ascii=False)
+        chunk_texts = [payload[i:i + CATALOG_CHUNK_MAX_CHARS] for i in range(0, len(payload), CATALOG_CHUNK_MAX_CHARS)] or [""]
+        now = int(time.time())
+        expires_at = now + CATALOG_TTL_SECONDS * 2
+        for i, chunk in enumerate(chunk_texts):
+            cache_table.put_item(Item={
+                "fixtureId": _catalog_chunk_key(i), "fetchedAt": now,
+                "data": chunk, "expiresAt": expires_at,
+            })
         cache_table.put_item(Item={
-            "fixtureId": cache_key, "fetchedAt": int(time.time()),
-            "oddsData": json.dumps({"marketNames": market_names, "outcomeNames": outcome_names}, ensure_ascii=False),
-            "expiresAt": int(time.time()) + CATALOG_TTL_SECONDS * 2,
+            "fixtureId": CATALOG_CACHE_KEY + ":meta", "fetchedAt": now,
+            "chunkCount": len(chunk_texts), "expiresAt": expires_at,
         })
     except Exception as cache_err:
-        print("No se pudo cachear catalogo de deporte " + str(sport_id) + ": " + str(cache_err))
+        print("No se pudo cachear el catalogo: " + str(cache_err))
 
     return market_names, outcome_names
+
+
+def _catalog_chunk_key(i):
+    return CATALOG_CACHE_KEY + ":chunk:" + str(i)
 
 
 def _enriquecer_nombres(evaluados, market_names, outcome_names):
@@ -144,9 +182,8 @@ def handler(event, context):
         if op:
             evaluados.append(op.to_dict())
 
-    sport_id = odds_response.get("sportId")
-    if sport_id is not None and evaluados:
-        market_names, outcome_names = _catalogo_nombres(sport_id)
+    if evaluados:
+        market_names, outcome_names = _catalogo_nombres()
         evaluados = _enriquecer_nombres(evaluados, market_names, outcome_names)
 
     arbitrajes = [e for e in evaluados if e["isArbitrage"] and e["profitPct"] <= PROFIT_PCT_MAX]

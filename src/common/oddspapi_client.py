@@ -93,9 +93,17 @@ def get_odds(fixture_id: str) -> dict:
     return _get("/odds", {"fixtureId": fixture_id, "oddsFormat": "decimal", "verbosity": 3})
 
 
-def get_markets(sport_id) -> list:
-    """Catalogo de mercados con nombres legibles (marketId -> marketName, outcomeId -> outcomeName)."""
-    markets = _get("/markets", {"sportId": sport_id})
+def get_markets() -> list:
+    """Catalogo COMPLETO de mercados de OddsPapi (marketId -> marketName, outcomeId ->
+    outcomeName), para TODOS los deportes.
+
+    CONFIRMADO CONTRA LA DOCUMENTACION OFICIAL (oddspapi.io/us/docs/get-markets):
+    este endpoint NO soporta filtro por deporte (el unico parametro es "language").
+    Pasarle "sportId" no tiene efecto: siempre devuelve el catalogo entero. Por eso
+    ya no se envia ese parametro, y el cacheo (ver _catalogo_nombres en
+    fetch_odds_detect_arb/app.py) es global, no por deporte.
+    """
+    markets = _get("/markets", {})
     if isinstance(markets, dict) and "data" in markets:
         markets = markets["data"]
     return markets
