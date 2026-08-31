@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Buscador de arbitraje deportivo</title>
+<style>
+  :root { --bg: #0f1419; --card: #1a2129; --border: #2a3441; --accent: #22c55e; --text: #e5e7eb; --muted: #9ca3af; --danger: #ef4444; --amber: #f59e0b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); padding: 24px; }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  h2 { font-size: 15px; margin: 24px 0 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  select, button { font-size: 14px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); background: #111827; color: var(--text); }
+  select { width: 100%; margin-bottom: 16px; }
+  button { background: var(--accent); color: #06210f; font-weight: 600; border: none; cursor: pointer; width: 100%; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; background: #374151; color: var(--muted); }
+  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); margin-top: 8px; }
+  .row { display: flex; justify-content: space-between; align-items: center; font-size: 14px; margin: 6px 0; }
+  .muted { color: var(--muted); }
+  .status { font-size: 13px; color: var(--muted); text-align: center; margin-top: 10px; }
+  .opp { border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 10px; }
+  .opp-header { display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 4px; }
+  .opp-sub { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .profit { color: var(--accent); }
+  .profit-suspicious { color: var(--amber); }
+  .leg { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; border-top: 1px dashed var(--border); }
+  .leg:first-of-type { border-top: none; }
+  .empty { text-align: center; color: var(--muted); padding: 30px 0; font-size: 14px; }
+  .error { color: var(--danger); font-size: 13px; margin-top: 10px; }
+  .warning { background: rgba(239,68,68,0.12); border: 1px solid var(--danger); color: #fca5a5; font-size: 13px; padding: 10px 12px; border-radius: 8px; margin-bottom: 14px; }
+  .caveat { background: rgba(245,158,11,0.1); border: 1px solid var(--amber); color: #fcd34d; font-size: 13px; padding: 10px 12px; border-radius: 8px; margin-bottom: 14px; }
+  .quota-ok { color: var(--accent); }
+  .quota-bad { color: var(--danger); font-weight: 600; }
+  .no-math { color: var(--muted); font-size: 13px; font-style: italic; }
+  details summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Buscador de arbitraje deportivo</h1>
+  <div class="sub">Escanea todos los partidos de hoy y manana en OddsPapi buscando surebets.</div>
+
+  <div class="card" id="setup-card">
+    <label for="sport">Deporte (opcional, deja "Todos" para la busqueda mas amplia)</label>
+    <select id="sport">
+      <option value="">Todos los deportes</option>
+      <option value="10">Futbol</option>
+      <option value="18">Baloncesto</option>
+      <option value="13">Baseball</option>
+      <option value="12">Cricket</option>
+      <option value="16">Hockey sobre hielo</option>
+    </select>
+    <button id="btn-estimate">Buscar arbitrajes de hoy y manana</button>
+    <div class="status" id="setup-status"></div>
+  </div>
+
+  <div class="card" id="confirm-card" style="display:none;">
+    <div class="row"><span>Partidos encontrados con cuotas activas</span><strong id="confirm-count">-</strong></div>
+    <div class="row muted"><span>Solicitudes que consumira esta busqueda</span><span id="confirm-cost">-</span></div>
+    <div class="row" id="usage-row" style="display:none;"><span class="muted">Cuota restante en tu cuenta</span><span id="usage-remaining">-</span></div>
+    <div class="warning" id="quota-warning" style="display:none;"></div>
+    <button id="btn-confirm">Confirmar y buscar</button>
+    <button id="btn-cancel" class="secondary">Cancelar</button>
+  </div>
+
+  <div class="card" id="progress-card" style="display:none;">
+    <div class="status" id="progress-status">Procesando...</div>
+  </div>
+
+  <div id="results"></div>
+  <div id="scanned"></div>
+</div>
+
+<script>
+const API_BASE = "https://d6xu9m467d.execute-api.eu-west-3.amazonaws.com/prod";
+
+const setupCard = document.getElementById("setup-card");
+const confirmCard = document.getElementById("confirm-card");
+const progressCard = document.getElementById("progress-card");
+const resultsEl = document.getElementById("results");
+const scannedEl = document.getElementById("scanned");
+const setupStatus = document.getElementById("setup-status");
+const progressStatus = document.getElementById("progress-status");
+const btnConfirm = document.getElementById("btn-confirm");
+const quotaWarning = document.getElementById("quota-warning");
+
+let currentJobId = null;
+
+document.getElementById("btn-estimate").addEventListener("click", async () => {
+  const sportId = document.getElementById("sport").value;
+
+  setupStatus.textContent = "Consultando partidos disponibles...";
+  setupStatus.classList.remove("error");
+  document.getElementById("btn-estimate").disabled = true;
+
+  try {
+    const body = sportId ? { sportId: Number(sportId) } : {};
+    const res = await fetch(API_BASE + "/jobs/estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Error consultando partidos");
+
+    currentJobId = data.jobId;
+    const requested = data.estimatedRequests;
+    document.getElementById("confirm-count").textContent = requested;
+    document.getElementById("confirm-cost").textContent = requested + " solicitud(es)";
+
+    quotaWarning.style.display = "none";
+    btnConfirm.disabled = false;
+
+    const usage = data.accountUsage;
+    if (usage && !usage.error && typeof usage.request_limit === "number" && typeof usage.request_count === "number") {
+      const remaining = usage.request_limit - usage.request_count;
+      const usageEl = document.getElementById("usage-remaining");
+      usageEl.textContent = remaining + " de " + usage.request_limit;
+      usageEl.className = remaining >= requested ? "quota-ok" : "quota-bad";
+      document.getElementById("usage-row").style.display = "flex";
+
+      if (requested > remaining) {
+        quotaWarning.style.display = "block";
+        quotaWarning.textContent = "Esta busqueda pide " + requested + " solicitudes pero solo te quedan " + remaining + " este mes. Reduce el alcance (elige un deporte) antes de confirmar.";
+        btnConfirm.disabled = true;
+      }
+    } else {
+      document.getElementById("usage-row").style.display = "none";
+    }
+
+    setupCard.style.display = "none";
+    confirmCard.style.display = "block";
+  } catch (err) {
+    setupStatus.textContent = err.message;
+    setupStatus.classList.add("error");
+  } finally {
+    document.getElementById("btn-estimate").disabled = false;
+  }
+});
+
+document.getElementById("btn-cancel").addEventListener("click", () => {
+  confirmCard.style.display = "none";
+  setupCard.style.display = "block";
+  currentJobId = null;
+});
+
+btnConfirm.addEventListener("click", async () => {
+  if (btnConfirm.disabled) return;
+  confirmCard.style.display = "none";
+  progressCard.style.display = "block";
+  progressStatus.textContent = "Buscando arbitrajes en todos los partidos...";
+  resultsEl.innerHTML = "";
+  scannedEl.innerHTML = "";
+
+  try {
+    const res = await fetch(API_BASE + "/jobs/" + currentJobId + "/confirm", { method: "POST" });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || "Error al confirmar el job");
+    }
+    pollStatus();
+  } catch (err) {
+    progressStatus.textContent = "Error: " + err.message;
+  }
+});
+
+async function pollStatus() {
+  try {
+    const res = await fetch(API_BASE + "/jobs/" + currentJobId);
+    const data = await res.json();
+
+    if (data.status === "DONE") {
+      renderResults(data);
+      renderScanned(data);
+      progressCard.style.display = "none";
+      setupCard.style.display = "block";
+      return;
+    }
+
+    progressStatus.textContent = "Procesando... (" + data.status + ")";
+    setTimeout(pollStatus, 3000);
+  } catch (err) {
+    progressStatus.textContent = "Error consultando estado: " + err.message;
+    setTimeout(pollStatus, 5000);
+  }
+}
+
+function legsHtml(legs) {
+  return legs.map(function(leg) {
+    var nameHtml = leg.outcomeLabel || ("resultado " + leg.outcomeId);
+    var bookHtml = leg.link
+      ? '<a href="' + leg.link + '" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;">' + leg.bookmaker + '</a>'
+      : leg.bookmaker;
+    return '<div class="leg"><span>' + nameHtml + ' - ' + bookHtml + '</span><span>@' + leg.price + ' - apostar $' + leg.stake + '</span></div>';
+  }).join("");
+}
+
+function renderResults(data) {
+  resultsEl.innerHTML = "";
+
+  const summary = document.createElement("div");
+  summary.className = "status";
+  summary.style.marginBottom = "12px";
+  summary.textContent = data.fixturesProcessed + " partidos analizados - " + data.fixturesWithArbitrage + " con arbitraje - " + data.fixturesFromCache + " desde cache";
+  resultsEl.appendChild(summary);
+
+  const opportunities = data.opportunities || [];
+
+  const caveat = document.createElement("div");
+  caveat.className = "caveat";
+  caveat.textContent = "Los porcentajes de ganancia muy altos (mas de ~20-30%) suelen venir de mercados con mas de 2 resultados reales donde solo se detectaron cuotas de 2 casas. Verifica manualmente el mercado completo antes de apostar en esos casos.";
+  if (opportunities.length > 0) resultsEl.appendChild(caveat);
+
+  if (opportunities.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No se encontraron oportunidades de arbitraje en esta busqueda.";
+    resultsEl.appendChild(empty);
+    return;
+  }
+
+  for (const op of opportunities) {
+    const el = document.createElement("div");
+    el.className = "opp";
+    const suspicious = op.profitPct > 25;
+    el.innerHTML =
+      '<div class="opp-header"><span>' + op.label + '</span><span class="' + (suspicious ? "profit-suspicious" : "profit") + '">+' + op.profitPct + '%' + (suspicious ? " (verificar)" : "") + '</span></div>' +
+      '<div class="opp-sub">Mercado ' + (op.marketLabel || op.marketKey) + ' - implicacion ' + op.impliedProbabilitySum + '</div>' +
+      legsHtml(op.legs);
+    resultsEl.appendChild(el);
+  }
+}
+
+function renderScanned(data) {
+  scannedEl.innerHTML = "";
+
+  const heading = document.createElement("h2");
+  heading.textContent = "Todos los partidos escaneados (" + (data.scannedFixtures || []).length + ")";
+  scannedEl.appendChild(heading);
+
+  const list = data.scannedFixtures || [];
+  if (list.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "No hay partidos escaneados para mostrar.";
+    scannedEl.appendChild(empty);
+    return;
+  }
+
+  for (const fx of list) {
+    const el = document.createElement("div");
+    el.className = "opp";
+
+    let mathHtml;
+    if (!fx.bestMarket) {
+      mathHtml = '<div class="no-math">Sin cuotas de casas disponibles para este partido (0 mercados analizados).</div>';
+    } else {
+      const bm = fx.bestMarket;
+      const suspicious = bm.isArbitrage && bm.profitPct > 25;
+      mathHtml =
+        '<div class="opp-sub">Mercado mas cercano a arbitraje: ' + (bm.marketLabel || bm.marketKey) + '</div>' +
+        '<div class="row"><span class="muted">Suma de probabilidades implicitas</span><span>' + bm.impliedProbabilitySum + '</span></div>' +
+        '<div class="row"><span class="muted">' + (bm.isArbitrage ? "Ganancia" : "Margen de la casa (sin arbitraje)") + '</span><span class="' + (bm.isArbitrage ? (suspicious ? "profit-suspicious" : "profit") : "muted") + '">' + (bm.isArbitrage ? "+" + bm.profitPct + "%" : "-" + Math.abs(bm.profitPct) + "%") + '</span></div>' +
+        '<details><summary>Ver cuotas usadas en el calculo</summary>' + legsHtml(bm.legs) + '</details>';
+    }
+
+    el.innerHTML =
+      '<div class="opp-header"><span>' + fx.label + '</span><span class="muted" style="font-size:12px;">' + (fx.marketsAnalyzed || 0) + ' mercados</span></div>' +
+      '<div class="opp-sub">' + (fx.tournamentName || fx.sportName || "") + '</div>' +
+      mathHtml;
+    scannedEl.appendChild(el);
+  }
+}
+</script>
+</body>
+</html>

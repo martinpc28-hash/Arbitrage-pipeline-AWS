@@ -1,0 +1,44 @@
+{
+  "Comment": "Busca arbitraje en todos los fixtures de hoy y manana, con concurrencia controlada",
+  "StartAt": "ProcesarFixtures",
+  "States": {
+    "ProcesarFixtures": {
+      "Type": "Map",
+      "ItemsPath": "$.fixtureIds",
+      "MaxConcurrency": 3,
+      "ItemSelector": {
+        "jobId.$": "$.jobId",
+        "fixtureId.$": "$$.Map.Item.Value"
+      },
+      "ResultPath": "$.mapResults",
+      "Iterator": {
+        "StartAt": "FetchOddsYDetectarArbitraje",
+        "States": {
+          "FetchOddsYDetectarArbitraje": {
+            "Type": "Task",
+            "Resource": "${FetchOddsDetectArbFunctionArn}",
+            "Retry": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 2,
+                "BackoffRate": 2.0
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "Next": "Agregar"
+    },
+    "Agregar": {
+      "Type": "Task",
+      "Resource": "${AggregateResultsFunctionArn}",
+      "Parameters": {
+        "jobId.$": "$.jobId",
+        "mapResults.$": "$.mapResults"
+      },
+      "End": true
+    }
+  }
+}

@@ -1,0 +1,175 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Buscador de arbitraje deportivo bajo demanda, usando OddsPapi.
+  100% serverless, sin contenedores: Lambda (runtime nativo Python),
+  Step Functions, DynamoDB y API Gateway.
+
+Parameters:
+  OddsPapiApiKey:
+    Type: String
+    NoEcho: true
+    Description: API key de OddsPapi. Se guarda como variable de entorno de las Lambdas.
+  CacheTtlSeconds:
+    Type: Number
+    Default: 600
+    Description: Cuánto tiempo se reutiliza una consulta de fixture antes de volver a gastar cuota.
+  MaxConcurrency:
+    Type: Number
+    Default: 3
+    Description: Fixtures procesados en paralelo dentro del Step Function. Súbelo cuando tengas plan pagado.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 20
+    MemorySize: 256
+    Environment:
+      Variables:
+        ODDSPAPI_API_KEY: !Ref OddsPapiApiKey
+        JOBS_TABLE_NAME: !Ref JobsTable
+        CACHE_TABLE_NAME: !Ref CacheTable
+        RESULTS_TABLE_NAME: !Ref ResultsTable
+        CACHE_TTL_SECONDS: !Ref CacheTtlSeconds
+
+Resources:
+
+  # ---------- DynamoDB ----------
+
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: jobId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: jobId
+          KeyType: HASH
+
+  ResultsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: jobId
+          AttributeType: S
+        - AttributeName: fixtureId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: jobId
+          KeyType: HASH
+        - AttributeName: fixtureId
+          KeyType: RANGE
+
+  CacheTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: fixtureId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: fixtureId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  # ---------- Lambdas ----------
+
+  EstimateJobFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/lambdas/estimate_job/
+      Handler: app.handler
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref JobsTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /jobs/estimate
+            Method: post
+
+  ConfirmJobFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/lambdas/confirm_job/
+      Handler: app.handler
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Ref ArbitrageStateMachine
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - StepFunctionsExecutionPolicy:
+            StateMachineName: !GetAtt ArbitrageStateMachine.Name
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /jobs/{jobId}/confirm
+            Method: post
+
+  GetJobStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/lambdas/get_job_status/
+      Handler: app.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref JobsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref ResultsTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /jobs/{jobId}
+            Method: get
+
+  FetchOddsDetectArbFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/lambdas/fetch_odds_detect_arb/
+      Handler: app.handler
+      Timeout: 20
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CacheTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ResultsTable
+
+  AggregateResultsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/lambdas/aggregate_results/
+      Handler: app.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+
+  # ---------- Step Functions ----------
+
+  ArbitrageStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/definition.asl.json
+      DefinitionSubstitutions:
+        FetchOddsDetectArbFunctionArn: !GetAtt FetchOddsDetectArbFunction.Arn
+        AggregateResultsFunctionArn: !GetAtt AggregateResultsFunction.Arn
+        MaxConcurrency: !Ref MaxConcurrency
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref FetchOddsDetectArbFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref AggregateResultsFunction
+
+Outputs:
+  ApiUrl:
+    Description: URL base de la API
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+  StateMachineArn:
+    Value: !Ref ArbitrageStateMachine
