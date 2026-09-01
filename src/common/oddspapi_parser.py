@@ -15,6 +15,33 @@ from common.arbitrage import OutcomePrice
 # Se ignoran por completo, en todos los mercados.
 BOOKMAKERS_EXCLUIDOS = {"betfair-ex"}
 
+# Filtro "solo casas accesibles desde Espana" (licencia DGOJ), a pedido del
+# usuario. NO ES UNA FUENTE OFICIAL: es el mejor esfuerzo del asistente
+# combinando (a) el patron de nombres que usa OddsPapi para diferenciar
+# entidades por pais cuando un operador tiene varias -- ej. "betway.es" vs
+# "betway", "winamax.es" vs "winamax.de" -- confirmado contra datos reales
+# el 2026-09-01, y (b) una lista de operadores conocidos con licencia DGOJ
+# por nombre de marca. El registro oficial y siempre actualizado esta en
+# https://www.ordenacionjuego.es/es/operadores-actividad -- las licencias
+# cambian, y el nombre exacto que usa OddsPapi para cada casa puede no
+# coincidir con lo que se puso aqui a mano (si no coincide, esa casa
+# simplemente no aparece nunca, no se incluye por error). CORREGIR ESTA
+# LISTA con el tiempo segun lo que el usuario vaya confirmando.
+BOOKMAKERS_ES_CONOCIDOS = {
+    "codere", "sportium", "luckia", "wanabet", "retabet", "paston",
+    "kirolbet", "botemania", "marcaapuestas", "suertia", "yobingo",
+    "zamnick", "888sport.es", "bet365.es", "betsson.es", "netbet.es",
+    "betano.es", "bwin.es", "interwetten.es", "casumo.es", "williamhill.es",
+    "pokerstarssports.es",
+}
+
+
+def _accesible_desde_espana(bm_name):
+    """True si la casa tiene licencia DGOJ conocida, o si OddsPapi la marca
+    explicitamente como entidad de Espana (sufijo ".es")."""
+    nombre = bm_name.lower()
+    return nombre.endswith(".es") or nombre in BOOKMAKERS_ES_CONOCIDOS
+
 # Deteccion de outliers por dato de cuota erroneo/desactualizado, sin importar
 # de que casa venga (visto en produccion: balkanbet.rs y gamdom devolviendo
 # 9.6-10.0 en un mercado donde el resto de casas cotizaba ~2.5). Con al menos
@@ -54,6 +81,8 @@ def agrupar_mejores_cuotas_por_mercado(odds_response):
     etiquetas = {}
     for bm_name, bm_data in odds_response.get("bookmakerOdds", {}).items():
         if bm_name in BOOKMAKERS_EXCLUIDOS:
+            continue
+        if not _accesible_desde_espana(bm_name):
             continue
         if not bm_data.get("bookmakerIsActive", True):
             continue
