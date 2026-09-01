@@ -183,10 +183,17 @@ GET /history                 → Lambda oddsarb-list-history: lista los jobs
   entorno de ejecución) y se pueden borrar sin afectar el funcionamiento
   normal de la app.
 - El mapeo de `sportId` en el `<select>` del frontend es parcial y no fue
-  verificado exhaustivamente contra el catálogo real de OddsPapi (solo se
-  confirmó que `sportId=13` es Baseball, no Tenis como se asumió al
-  principio). Antes de confiar en otros valores del desplegable, verificar
-  contra `GET /sports` o los `sport_ids` que trae `GET /account`.
+  verificado exhaustivamente contra el catálogo real de OddsPapi. Confirmado
+  hasta ahora: `10`=Futbol, `13`=Baseball (no Tenis como se asumió al
+  principio), `16`=E-sports Dota 2, `17`=E-sports Counter-Strike,
+  `18`=E-sports League of Legends. **`18` NO es Baloncesto y `16` NO es
+  Hockey sobre hielo** — esas dos entradas estaban mal en el desplegable
+  original y se quitaron el 2026-09-01 (mejor no tener la opción que tener
+  una que trae el deporte equivocado). `12` (Cricket) sigue sin verificar.
+  Antes de agregar más deportes al desplegable, verificar contra
+  `GET /sports` o los `sport_ids` que trae `GET /account` — **ojo:** ambos
+  endpoints parecen dejar de responder (`429`) cuando la cuota mensual de
+  `/odds` ya se agotó, aunque en teoría no deberían consumirla.
 
 ## Estructura del proyecto
 
