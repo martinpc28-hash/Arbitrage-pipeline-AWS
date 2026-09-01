@@ -7,12 +7,23 @@ distinta (ej. "mas de 2.5" vs "mas de 3.5") es un market_id numerico
 diferente, asi que agrupar por market_id ya es seguro y no mezcla lineas.
 """
 
+import statistics
 from typing import Optional
 from common.arbitrage import OutcomePrice
 
 # Casas excluidas a pedido del usuario (ej. no tiene cuenta ahi / no confia en ella).
 # Se ignoran por completo, en todos los mercados.
 BOOKMAKERS_EXCLUIDOS = {"betfair-ex"}
+
+# Deteccion de outliers por dato de cuota erroneo/desactualizado, sin importar
+# de que casa venga (visto en produccion: balkanbet.rs y gamdom devolviendo
+# 9.6-10.0 en un mercado donde el resto de casas cotizaba ~2.5). Con al menos
+# esta cantidad de casas cotizando el mismo resultado, se calcula la mediana
+# de todas; cualquier cuota que la supere por mas de este multiplicador se
+# descarta como sospechosa al elegir "la mejor". Con menos casas no hay base
+# estadistica suficiente para juzgar, asi que se usa la mas alta tal cual.
+MIN_CASAS_PARA_DETECTAR_OUTLIER = 3
+MULTIPLICADOR_OUTLIER = 2.0
 
 
 def _line_de_mercado(market_obj):
@@ -23,8 +34,23 @@ def _es_precio_activo(player_obj):
     return bool(player_obj.get("active", True)) and player_obj.get("price") is not None
 
 
+def _mejor_precio_sin_outliers(candidatos):
+    """De todas las cuotas de un mismo resultado (entre casas), elige la mas
+    alta que no sea un outlier estadistico frente a las demas."""
+    if len(candidatos) < MIN_CASAS_PARA_DETECTAR_OUTLIER:
+        return max(candidatos, key=lambda c: c.price)
+    mediana = statistics.median(c.price for c in candidatos)
+    validos = [c for c in candidatos if c.price <= mediana * MULTIPLICADOR_OUTLIER]
+    if not validos:
+        # Si TODAS las cuotas son muy dispares entre si, no hay una base
+        # confiable para descartar ninguna en particular: mejor no perder el
+        # mercado por completo que arriesgarse a descartar la buena.
+        validos = candidatos
+    return max(validos, key=lambda c: c.price)
+
+
 def agrupar_mejores_cuotas_por_mercado(odds_response):
-    mejor = {}
+    candidatos_por_resultado = {}
     etiquetas = {}
     for bm_name, bm_data in odds_response.get("bookmakerOdds", {}).items():
         if bm_name in BOOKMAKERS_EXCLUIDOS:
@@ -51,8 +77,13 @@ def agrupar_mejores_cuotas_por_mercado(odds_response):
                         outcome_label=outcome_obj.get("outcomeLabel") or player_obj.get("playerName"),
                         price=precio, bookmaker=bm_name, link=link,
                     )
-                    rm = mejor.setdefault(market_key, {})
-                    actual = rm.get(rkey)
-                    if actual is None or precio > actual.price:
-                        rm[rkey] = cand
+                    candidatos_por_resultado.setdefault(market_key, {}).setdefault(rkey, []).append(cand)
+
+    mejor = {
+        market_key: {
+            rkey: _mejor_precio_sin_outliers(candidatos)
+            for rkey, candidatos in resultados.items()
+        }
+        for market_key, resultados in candidatos_por_resultado.items()
+    }
     return ({k: list(v.values()) for k, v in mejor.items()}, etiquetas)
